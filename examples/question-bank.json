@@ -1,0 +1,40 @@
+{
+  "format": "tensor-dojo-bank",
+  "version": 1,
+  "problems": [
+    {
+      "id": "demo-l1-normalize",
+      "title": "L1 向量归一化（导入示例）",
+      "category": "Normalization",
+      "difficulty": "基础",
+      "minutes": 15,
+      "description": "x 为浮点张量，沿 dim 计算绝对值之和，分母至少为 eps。返回同形 Tensor。全零输入返回 0，保留输入梯度。",
+      "signature": "x, dim=-1, eps=1e-12",
+      "formula": "y = x / max(sum(abs(x)), eps)",
+      "hints": ["沿 dim 求和时保留维度。", "分母使用 clamp_min。"],
+      "source": "https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.normalize.html",
+      "solution": "import torch\n\ndef solve(x, dim=-1, eps=1e-12):\n    return x / x.abs().sum(dim=dim, keepdim=True).clamp_min(eps)\n",
+      "forbidden": ["normalize"],
+      "inference_only": false,
+      "immutable_inputs": true,
+      "constant_indices": [],
+      "tests": [
+        {
+          "name": "正负值向量",
+          "args": [{"type": "tensor", "dtype": "float64", "shape": [2, 2], "data": [3, -1, -2, 2]}],
+          "expected": {"type": "tensor", "dtype": "float64", "shape": [2, 2], "data": [0.75, -0.25, -0.5, 0.5]}
+        },
+        {
+          "name": "指定归一化维度",
+          "args": [{"type": "tensor", "dtype": "float64", "shape": [2, 2], "data": [1, 2, 3, 2]}, 0],
+          "expected": {"type": "tensor", "dtype": "float64", "shape": [2, 2], "data": [0.25, 0.5, 0.75, 0.5]}
+        },
+        {
+          "name": "全零输入",
+          "args": [{"type": "tensor", "dtype": "float64", "shape": [1, 2], "data": [0, 0]}],
+          "expected": {"type": "tensor", "dtype": "float64", "shape": [1, 2], "data": [0, 0]}
+        }
+      ]
+    }
+  ]
+}

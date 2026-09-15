@@ -280,6 +280,9 @@ def preview(x):
 
 
 def public_problem(p,detail=False):
+    if detail and '_public' in p:
+        import copy
+        return copy.deepcopy(p['_public'])
     keys=['id','title','category','difficulty','minutes']
     if detail: keys+=['description','signature','formula','hints','source','starter','runner','inference_only']
     result={k:p[k] for k in keys}
@@ -291,4 +294,10 @@ def public_problem(p,detail=False):
             with torch.no_grad(): output=p['reference'](*args)
             result['examples'].append({'name':name,'inputs':[{'shape':list(x.shape),'dtype':str(x.dtype),'preview':preview(x)} if isinstance(x,torch.Tensor) else x for x in args], 'output':preview(output)})
         result['testCount']=len(cases)
+        result['totalTests']=len(cases)*len(p.get('seeds',[17,271,901]))
     return result
+
+
+BUILTIN_PROBLEMS=dict(PROBLEMS)
+from bank import apply_overlay
+apply_overlay(PROBLEMS)

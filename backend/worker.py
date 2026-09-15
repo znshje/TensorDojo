@@ -14,8 +14,7 @@ import torch
 from catalog import PROBLEMS
 
 torch.set_num_threads(1)
-resource.setrlimit(resource.RLIMIT_CPU,(10,11))
-resource.setrlimit(resource.RLIMIT_FSIZE,(2*1024*1024,2*1024*1024))
+
 
 class BoundedLog(io.StringIO):
     def write(self,s):
@@ -87,7 +86,7 @@ def judge(problem_id,code,mode='submit'):
         fn=namespace.get('solve')
         if not callable(fn): raise ValueError('请定义可调用的 solve 函数')
         # Public run uses one seed; submit checks public + two independent random seeds.
-        for seed in ([17] if mode=='run' else [17,271,901]):
+        for seed in ([17] if mode=='run' else problem.get('seeds',[17,271,901])):
             torch.manual_seed(seed)
             cases=problem['cases']()
             if mode=='run': cases=cases[:2]
@@ -95,7 +94,7 @@ def judge(problem_id,code,mode='submit'):
                 start=time.perf_counter()
                 try:
                     with contextlib.redirect_stdout(log),contextlib.redirect_stderr(log):
-                        constant_indices=tuple(range(len(args))) if problem.get('inference_only') else ((1,) if problem_id in ('mse','bce','focal') else ())
+                        constant_indices=tuple(range(len(args))) if problem.get('inference_only') else tuple(problem.get('constant_indices',((1,) if problem_id in ('mse','bce','focal') else ())))
                         shapes=compare(fn,problem['reference'],args,constant_indices,problem.get('immutable_inputs',False))
                     results.append({'name':name if seed==17 else f'随机回归 {seed} · {i+1}','passed':True,'shapes':shapes,'ms':round((time.perf_counter()-start)*1000,2)})
                 except Exception as exc:
@@ -106,6 +105,11 @@ def judge(problem_id,code,mode='submit'):
     return {'status':'accepted' if passed==len(results) and results else 'wrong_answer','passed':passed,'total':len(results),'cases':results,'stdout':log.getvalue(),'ms':round((time.perf_counter()-started)*1000,1)}
 
 if __name__=='__main__':
+    resource.setrlimit(resource.RLIMIT_CPU,(10,11))
+    resource.setrlimit(resource.RLIMIT_FSIZE,(2*1024*1024,2*1024*1024))
     request=json.loads(Path(sys.argv[1]).read_text())
+    if '_bank_spec' in request:
+        from bank import executable
+        PROBLEMS[request['problem_id']]=executable(request['_bank_spec'])
     result=judge(request['problem_id'],request['code'],request.get('mode','submit'))
     Path(sys.argv[2]).write_text(json.dumps(result,ensure_ascii=False))

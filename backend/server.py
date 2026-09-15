@@ -12,15 +12,18 @@ import sys
 import tempfile
 import threading
 from http.server import SimpleHTTPRequestHandler,ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import urlparse,parse_qs
 import torch
 torch.set_num_threads(1)
-from catalog import PROBLEMS,public_problem
+from catalog import PROBLEMS,BUILTIN_PROBLEMS,public_problem
+from bank import BankStore,BankError,validate_bundle,export_problem,FORMAT,VERSION
 
 ROOT=Path(__file__).resolve().parent.parent
-DATA=ROOT/'data'
+DATA=Path(os.environ.get('DOJO_DATA_DIR',ROOT/'data'))
 TOKEN=secrets.token_urlsafe(32)
 SLOTS=threading.BoundedSemaphore(2)
+STORE=BankStore(BUILTIN_PROBLEMS)
+BANK_SLOTS=threading.BoundedSemaphore(1)
 
 def database():
     DATA.mkdir(exist_ok=True)
@@ -48,6 +51,28 @@ def run_submission(payload,timeout=18):
             except ProcessLookupError: pass
             proc.wait()
 
+def prepare_import(specs):
+    if not BANK_SLOTS.acquire(blocking=False):raise BankError('已有题库校验正在进行，请稍后重试',429)
+    try:
+        with tempfile.TemporaryDirectory(prefix='dojo-bank-') as temp:
+            source=Path(temp)/'request.json';result=Path(temp)/'result.json'
+            source.write_text(json.dumps(specs,ensure_ascii=False))
+            env={**os.environ,'CUDA_VISIBLE_DEVICES':'','OMP_NUM_THREADS':'1','MKL_NUM_THREADS':'1'}
+            proc=subprocess.Popen([sys.executable,str(ROOT/'backend/bank_validation.py'),str(source),str(result)],cwd=temp,env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
+            try:
+                proc.wait(timeout=40)
+                if proc.returncode!=0 or not result.exists():raise BankError('参考实现校验进程异常退出或超出资源限制',422)
+                response=json.loads(result.read_text())
+                if 'error' in response:raise BankError(response['error'],422)
+                return response['rows']
+            except subprocess.TimeoutExpired:raise BankError('参考实现校验超过 40 秒，请检查代码或缩小导入批次',422)
+            finally:
+                try:os.killpg(proc.pid,signal.SIGKILL)
+                except ProcessLookupError:pass
+                proc.wait()
+    finally:BANK_SLOTS.release()
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self,*args,**kwargs): super().__init__(*args,directory=str(ROOT/'dist'),**kwargs)
     def log_message(self,fmt,*args): pass
@@ -61,6 +86,9 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         if not self.allowed_host(): return self.json(403,{'error':'仅允许本机访问'})
         path=urlparse(self.path).path
+        if path.startswith('/api/bank'):
+            return self.bank_get(path)
+        PROBLEMS=STORE.snapshot()
         if path=='/api/health': return self.json(200,{'python':sys.executable,'torch':torch.__version__,'device':'CPU','token':TOKEN})
         if path=='/api/problems': return self.json(200,[public_problem(p) for p in PROBLEMS.values()])
         if path=='/api/progress':
@@ -85,6 +113,10 @@ class Handler(SimpleHTTPRequestHandler):
         allowed={f'http://127.0.0.1:{self.server.server_port}',f'http://localhost:{self.server.server_port}','http://127.0.0.1:5173','http://localhost:5173'}
         if origin and origin not in allowed: return self.json(403,{'error':'拒绝跨站执行请求'})
         if self.headers.get('X-Dojo-Token')!=TOKEN: return self.json(403,{'error':'会话失效，请刷新页面'})
+        if urlparse(self.path).path.startswith('/api/bank'):
+            return self.bank_write(urlparse(self.path).path)
+        if self.command!='POST':return self.json(405,{'error':'判题只支持 POST'})
+        PROBLEMS=STORE.snapshot()
         if urlparse(self.path).path!='/api/judge': return self.json(404,{'error':'接口不存在'})
         try:
             n=int(self.headers.get('Content-Length','0'))
@@ -94,6 +126,9 @@ class Handler(SimpleHTTPRequestHandler):
         except (ValueError,TypeError): return self.json(400,{'error':'判题参数不合法'})
         if not SLOTS.acquire(blocking=False): return self.json(429,{'error':'判题队列已满，请稍后重试'})
         try:
+            # Capture the chosen revision for this in-flight submission.
+            payload.pop('_bank_spec',None)
+            payload['_bank_spec']=export_problem(PROBLEMS[payload['problem_id']])
             result=run_submission(payload)
             if payload['mode']=='submit':
                 with database() as db:
@@ -102,8 +137,65 @@ class Handler(SimpleHTTPRequestHandler):
             self.json(200,result)
         finally: SLOTS.release()
 
+    def do_PUT(self):return self.do_POST()
+    def do_DELETE(self):return self.do_POST()
+
+    def bank_get(self,path):
+        if self.headers.get('X-Dojo-Token')!=TOKEN:return self.json(403,{'error':'需要 X-Dojo-Token'})
+        try:
+            if path=='/api/bank':return self.json(200,STORE.info())
+            if path=='/api/bank/export':
+                ids=parse_qs(urlparse(self.path).query).get('ids',[None])[0]
+                return self.json(200,STORE.export(ids.split(',') if ids is not None else None))
+            if path=='/api/bank/example':return self.json(200,json.loads((ROOT/'examples/question-bank.json').read_text()))
+            if path.startswith('/api/bank/problems/') and len(path.split('/'))==5:
+                return self.json(200,STORE.get(path.split('/')[-1]))
+            raise BankError('管理接口不存在',404)
+        except BankError as exc:return self.json(exc.status,{'error':str(exc)})
+
+    def bank_write(self,path):
+        try:
+            try:
+                n=int(self.headers.get('Content-Length','0'))
+                if not 1<=n<=8*1024*1024:raise BankError('题库请求必须为 1 字节至 8 MiB',413)
+                body=json.loads(self.rfile.read(n))
+            except (ValueError,UnicodeError) as exc:
+                if isinstance(exc,BankError):raise
+                raise BankError('请求必须为合法 JSON') from exc
+            if not isinstance(body,dict):raise BankError('请求体必须为对象')
+            revision=body.get('expected_revision')
+            parts=path.split('/')
+            if self.command=='DELETE' and len(parts)==5 and parts[:4]==['','api','bank','problems']:
+                return self.json(200,STORE.delete(parts[4],revision))
+            if self.command=='POST' and len(parts)==6 and parts[:4]==['','api','bank','problems'] and parts[5]=='restore':
+                return self.json(200,STORE.restore(parts[4],revision))
+            overwrite=False;dry_run=False
+            if self.command=='POST' and path in ('/api/bank/import','/api/bank/validate'):
+                specs=validate_bundle(body.get('bundle'))
+                overwrite=body.get('overwrite',False);dry_run=body.get('dry_run',False)
+                if type(overwrite)!=bool or type(dry_run)!=bool:raise BankError('overwrite/dry_run 必须为 bool')
+                if path=='/api/bank/validate':
+                    rows=prepare_import(specs)
+                    return self.json(200,{'valid':True,'validated':len(rows),'ids':[r['spec']['id'] for r in rows]})
+            elif self.command=='POST' and path=='/api/bank/problems':
+                specs=validate_bundle({'format':FORMAT,'version':VERSION,'problems':[body.get('problem')]})
+            elif self.command=='PUT' and len(parts)==5 and parts[:4]==['','api','bank','problems']:
+                specs=validate_bundle({'format':FORMAT,'version':VERSION,'problems':[body.get('problem')]})
+                if specs[0]['id']!=parts[4]:raise BankError('URL id 与题目 id 不一致')
+                STORE.get(parts[4]);overwrite=True
+            else:raise BankError('管理接口或 HTTP 方法不支持',404)
+            with STORE.lock:STORE.check_revision(revision)
+            rows=prepare_import(specs)
+            result=STORE.import_prepared(rows,revision,overwrite,dry_run)
+            return self.json(200 if dry_run or overwrite else 201,result)
+        except BankError as exc:return self.json(exc.status,{'error':str(exc)})
+        except (OSError,ValueError) as exc:return self.json(500,{'error':'题库保存/校验失败：'+str(exc)})
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser(); parser.add_argument('--port',type=int,default=8765); args=parser.parse_args()
     database().close()
-    print(f'Tensor Dojo: http://127.0.0.1:{args.port}',flush=True)
-    ThreadingHTTPServer(('127.0.0.1',args.port),Handler).serve_forever()
+    httpd=ThreadingHTTPServer(('127.0.0.1',args.port),Handler)
+    print(f'Tensor Dojo: http://127.0.0.1:{httpd.server_port}',flush=True)
+    try:httpd.serve_forever()
+    except KeyboardInterrupt:pass
+    finally:httpd.server_close()

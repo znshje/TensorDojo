@@ -1,5 +1,6 @@
 """Standalone runnable scaffolds derived from each problem's first public case."""
 import pprint
+import ast
 import torch
 
 
@@ -17,7 +18,8 @@ def add_templates(problems):
             torch.manual_seed(17)
             name,args=p['cases']()[0]
             with torch.no_grad(): expected=p['reference'](*args)
-            names=[s.strip().split('=')[0] for s in p['signature'].split(',')]
+            parsed=ast.parse('def solve('+p['signature']+'):\n    pass').body[0].args
+            names=[arg.arg for arg in parsed.posonlyargs+parsed.args]
             assignments=[]
             for name,value in zip(names,args):
                 expression=literal(value)
@@ -33,5 +35,9 @@ def add_templates(problems):
             runner+='        torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-7, check_dtype=False)\n'
             runner+='        print("快速样例通过；完整边界与梯度检查请在页面提交判题。")\n'
             p['runner']=runner
-            p['starter']+=runner
-            p['solution']+=runner
+            if not has_main(p['starter']): p['starter']+=runner
+            if not has_main(p['solution']): p['solution']+=runner
+
+
+def has_main(code):
+    return any(isinstance(n,ast.If) and isinstance(n.test,ast.Compare) and isinstance(n.test.left,ast.Name) and n.test.left.id=='__name__' and any(isinstance(v,ast.Constant) and v.value=='__main__' for v in n.test.comparators) for n in ast.parse(code).body)

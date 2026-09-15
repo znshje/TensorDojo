@@ -6,22 +6,26 @@ import 'monaco-editor/esm/vs/basic-languages/python/python.contribution';
 import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
 import {ArrowUpRight, BookOpen, Check, CheckCheck, ChevronRight, Clock3, Code2, Copy, Cpu, FileCode2, FlaskConical, History, Keyboard, Lightbulb, ListFilter, LoaderCircle, Menu, Play, RotateCcw, Search, Send, Terminal, Trophy, X, XCircle} from 'lucide-react';
 import './style.css';
+import BankManager from './BankManager';
 self.MonacoEnvironment={getWorker:()=>new EditorWorker()};
 loader.config({monaco});
-const categories=['全部题目','注意力机制','损失函数','强化学习','评价指标','Normalization','KV Cache','基础算子'];
+const defaultCategories=['全部题目','注意力机制','损失函数','强化学习','评价指标','Normalization','KV Cache','基础算子'];
 const icons={'注意力机制':Cpu,'损失函数':FlaskConical,'强化学习':Trophy,'基础算子':Code2,'评价指标':CheckCheck,'Normalization':ListFilter,'KV Cache':History};
 async function api(path,options){const response=await fetch('/api'+path,options);const data=await response.json();if(!response.ok)throw new Error(data.error||'请求失败');return data;}
 function stored(key,fallback){try{return localStorage.getItem(key)??fallback;}catch{return fallback;}}
 function App(){
+ const [showManager,setShowManager]=useState(false),[bankVersion,setBankVersion]=useState(0);
+ async function refreshBank(){const [p,h,s]=await Promise.all([api('/problems'),api('/health'),api('/progress')]);setProblems(p);setEnv(h);setProgress(s);if(!p.some(row=>row.id===activeRef.current)){if(p.length)setActive(p[0].id);else{setProblem(null);setError('')}}else setBankVersion(v=>v+1);}
+
  const [problems,setProblems]=useState([]),[active,setActive]=useState(stored('dojo.active','self-attention')),[problem,setProblem]=useState(null),[category,setCategory]=useState('全部题目'),[query,setQuery]=useState(''),[progress,setProgress]=useState({}),[env,setEnv]=useState(null),[error,setError]=useState('');
  const [code,setCode]=useState(''),[tab,setTab]=useState('description'),[result,setResult]=useState(null),[busy,setBusy]=useState(false),[runningMode,setRunningMode]=useState(''),[history,setHistory]=useState([]),[solution,setSolution]=useState(null),[showSolution,setShowSolution]=useState(false),[showReset,setShowReset]=useState(false),[sidebar,setSidebar]=useState(false),[toast,setToast]=useState(''),[fontSize,setFontSize]=useState(Number(stored('dojo.font','14'))),[onlyUnsolved,setOnlyUnsolved]=useState(false),[seconds,setSeconds]=useState(0),[saveError,setSaveError]=useState(false);
  useEffect(()=>{function escape(e){if(e.key==='Escape'){setShowSolution(false);setShowReset(false);setSidebar(false)}}window.addEventListener('keydown',escape);return()=>window.removeEventListener('keydown',escape)},[]);
  const activeRef=useRef(active),editorRef=useRef(null),runRef=useRef(null),busyRef=useRef(false);
  const notify=(message)=>setToast(message);
- useEffect(()=>{Promise.all([api('/problems'),api('/health'),api('/progress')]).then(([p,e,s])=>{setProblems(p);setEnv(e);setProgress(s);}).catch(e=>setError('无法连接本地判题服务：'+e.message));},[]);
+ useEffect(()=>{Promise.all([api('/problems'),api('/health'),api('/progress')]).then(([p,e,s])=>{setProblems(p);if(p.length&&!p.some(row=>row.id===activeRef.current))setActive(p[0].id);setEnv(e);setProgress(s);}).catch(e=>setError('无法连接本地判题服务：'+e.message));},[]);
  useEffect(()=>{activeRef.current=active;let stale=false;setProblem(null);setResult(null);setTab('description');setShowSolution(false);setSolution(null);setSeconds(0);try{localStorage.setItem('dojo.active',active);}catch{}
- api('/problems/'+active).then(p=>{if(!stale){setProblem(p);setCode(stored('dojo.code.'+active,p.starter));}}).catch(e=>{if(!stale)setError(e.message)});
- api('/problems/'+active+'/history').then(h=>{if(!stale)setHistory(h)}).catch(()=>{});return()=>{stale=true;};},[active]);
+ api('/problems/'+active).then(p=>{if(!stale){setError('');setProblem(p);setCode(stored('dojo.code.'+active,p.starter));}}).catch(e=>{if(!stale)setError(e.message)});
+ api('/problems/'+active+'/history').then(h=>{if(!stale)setHistory(h)}).catch(()=>{});return()=>{stale=true;};},[active,bankVersion]);
  useEffect(()=>{let t=setInterval(()=>setSeconds(s=>s+1),1000);return()=>clearInterval(t)},[active]);
  useEffect(()=>{if(toast){let t=setTimeout(()=>setToast(''),3000);return()=>clearTimeout(t)}},[toast]);
  useEffect(()=>{function handler(e){if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){e.preventDefault();runRef.current?.(e.shiftKey?'submit':'run')}}window.addEventListener('keydown',handler);return()=>window.removeEventListener('keydown',handler)},[]);
@@ -34,13 +38,14 @@ function App(){
  function appendRunner(){if(code.includes('__main__'))return notify('当前代码已有运行入口');updateCode(code+problem.runner);notify('已追加运行入口，原有实现保留')}
  function downloadTemplate(){const url=URL.createObjectURL(new Blob([problem.starter],{type:'text/x-python;charset=utf-8'}));const link=document.createElement('a');link.href=url;link.download=problem.id+'.py';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
  async function viewSolution(){try{const s=await api('/problems/'+active+'/solution');setSolution(s.code);setShowSolution(true)}catch(e){notify(e.message)}}
+ const categories=['全部题目',...new Set([...defaultCategories.slice(1),...problems.map(p=>p.category)])];
  const filtered=problems.filter(p=>(category==='全部题目'||p.category===category)&&(!onlyUnsolved||!progress[p.id]?.solved)&&(p.title+' '+p.id).toLowerCase().includes(query.toLowerCase()));
- const solved=Object.values(progress).filter(p=>p.solved).length;
+ const solved=Object.values(progress).filter(p=>p.solved&&problems.some(row=>row.id===p.problem_id)).length;
  const index=problems.findIndex(p=>p.id===active);
  const isSolved=progress[active]?.solved;
  const iconProps={size:16,strokeWidth:1.7};
  return <div className="app">
-  <header className="topbar"><div className="brand"><button className="icon mobile-menu" onClick={()=>setSidebar(!sidebar)} aria-label="打开题库"><Menu size={20}/></button><span className="brandmark">T<span>_</span></span><strong>TENSOR<span>DOJO</span></strong><span className="brand-caption">手撕代码训练场</span></div><div className="topright"><span className={'runtime '+(env?'online':'')}>{env?<Cpu size={14}/>:<LoaderCircle size={14}/>} {env?'本地 PyTorch '+env.torch.split('+')[0]:'连接本地环境'}</span><span className="avatar">YOU</span></div></header>
+  <header className="topbar"><div className="brand"><button className="icon mobile-menu" onClick={()=>setSidebar(!sidebar)} aria-label="打开题库"><Menu size={20}/></button><span className="brandmark">T<span>_</span></span><strong>TENSOR<span>DOJO</span></strong><span className="brand-caption">手撕代码训练场</span></div><div className="topright"><button className="secondary bank-open" onClick={()=>setShowManager(true)}>题库管理</button><span className={'runtime '+(env?'online':'')}>{env?<Cpu size={14}/>:<LoaderCircle size={14}/>} {env?'本地 PyTorch '+env.torch.split('+')[0]:'连接本地环境'}</span><span className="avatar">YOU</span></div></header>
   <div className="workspace">
    <aside className={'sidebar '+(sidebar?'open':'')}>
     <div className="sidebar-top"><div className="eyebrow">YOUR PRACTICE SPACE</div><h2>从理解，到手写。</h2><p>把大模型的核心，写进肌肉记忆。</p></div>
@@ -60,11 +65,11 @@ function App(){
       <div className="problem-content">{problem?<>
        <div className="problem-kicker">CHALLENGE {String(index+1).padStart(2,'0')} <span>{isSolved?<><CheckCheck size={14}/>已通过</>:'待挑战'}</span></div>
        <h1>{problem.title}</h1><div className="tags"><span className={'difficulty '+problem.difficulty}>{problem.difficulty}</span><span>{problem.category}</span><span><Clock3 size={13}/>{problem.minutes} 分钟</span><span>PyTorch</span></div>
-       {tab==='description'&&<><h3>实现目标</h3><p className="description">{problem.description}</p><h3>核心公式</h3><pre className="formula">{problem.formula}</pre><h3>函数签名</h3><pre className="signature">solve({problem.signature})</pre><h3>输入样例 <span className="subtle">形状与数据预览</span></h3>{problem.examples.map((ex,i)=><details className="example" key={i} open={i===0}><summary><span>0{i+1}</span>{ex.name}<ChevronRight size={14}/></summary><div>{ex.inputs.map((v,j)=><div className="input-row" key={j}><code>{problem.signature.split(',')[j]?.split('=')[0].trim()}</code><span>{v?.shape?`[${v.shape.join(', ')}] · ${v.dtype.replace('torch.','')}`:String(v)}</span>{v?.preview&&<pre>{v.preview}</pre>}</div>)}<div className="input-row"><code>输出预览</code><pre>{ex.output}</pre></div></div></details>)}<div className="judge-note"><FlaskConical size={17}/><p>样例运行检查前 2 组；提交检查全部 {problem.testCount*3} 组数据，包括随机回归{problem.inference_only?'；本题不要求梯度':'与梯度一致性'}。误差容限：rtol 1e−5 / atol 1e−7。</p></div><a className="paper-link" href={problem.source} target="_blank" rel="noreferrer">阅读原始论文 / 官方文档 <ArrowUpRight size={14}/></a></>}
+       {tab==='description'&&<><h3>实现目标</h3><p className="description">{problem.description}</p><h3>核心公式</h3><pre className="formula">{problem.formula}</pre><h3>函数签名</h3><pre className="signature">solve({problem.signature})</pre><h3>输入样例 <span className="subtle">形状与数据预览</span></h3>{problem.examples.map((ex,i)=><details className="example" key={i} open={i===0}><summary><span>0{i+1}</span>{ex.name}<ChevronRight size={14}/></summary><div>{ex.inputs.map((v,j)=><div className="input-row" key={j}><code>{problem.signature.split(',')[j]?.split('=')[0].trim()}</code><span>{v?.shape?`[${v.shape.join(', ')}] · ${v.dtype.replace('torch.','')}`:String(v)}</span>{v?.preview&&<pre>{v.preview}</pre>}</div>)}<div className="input-row"><code>输出预览</code><pre>{ex.output}</pre></div></div></details>)}<div className="judge-note"><FlaskConical size={17}/><p>样例运行检查前 2 组；提交检查全部 {problem.totalTests??problem.testCount*3} 组数据，包括随机回归{problem.inference_only?'；本题不要求梯度':'与梯度一致性'}。误差容限：rtol 1e−5 / atol 1e−7。</p></div><a className="paper-link" href={problem.source} target="_blank" rel="noreferrer">阅读原始论文 / 官方文档 <ArrowUpRight size={14}/></a></>}
        {tab==='template'&&<div className="template-panel"><p className="description">保存为 .py 后用本地 Python 直接运行。模板包含示例输入、调用入口与期望输出，只需补全 solve。页面的“运行模板”执行当前编辑器代码，不计入成绩。</p><div className="template-actions"><button className="secondary" onClick={downloadTemplate}>下载 .py</button><button className="secondary" onClick={async()=>{try{await navigator.clipboard.writeText(problem.starter);notify('模板已复制')}catch{notify('复制失败，请下载模板')}}}><Copy size={14}/>复制模板</button><button className="secondary" onClick={appendRunner}>补充运行入口</button></div><pre className="template-code">{problem.starter}</pre></div>}
        {tab==='hints'&&<><p className="description">先尝试独立推导，再逐条展开提示。</p>{problem.hints.map((hint,i)=><details className="hint" key={hint}><summary><Lightbulb size={16}/>提示 {i+1}<ChevronRight size={14}/></summary><p>{hint}</p></details>)}<div className="solution-card"><Code2 size={22}/><h3>对照参考实现</h3><p>卡住时可以对照实现，理解后再从空白写一遍。</p><button className="secondary" onClick={viewSolution}>查看参考实现<ArrowUpRight size={14}/></button></div></>}
        {tab==='history'&&<div className="history-list">{history.length?history.map(h=><details key={h.id} className="history-item"><summary><span className={'verdict '+h.status}>{h.status==='accepted'?<Check size={16}/>:<XCircle size={16}/>}</span><span><strong>{h.status==='accepted'?'通过':h.status==='timeout'?'运行超时':'未通过'}</strong><small>{new Date(h.created_at.replace(' ','T')+'Z').toLocaleString('zh-CN')}</small></span><span>{h.result.passed??0}/{h.result.total??0}</span><ChevronRight size={14}/></summary><pre>{h.code}</pre><button className="secondary" onClick={()=>{updateCode(h.code);notify('已恢复该次提交的代码')}}>恢复到编辑器</button>{h.result.error&&<pre>{h.result.error}</pre>}</details>):<div className="empty-state"><History size={28}/><h3>还没有提交记录</h3><p>提交判题后，代码和结果会保存在本地。</p></div>}</div>}
-      </>:<div className="loading"><LoaderCircle className="spin"/>正在加载题目…</div>}</div>
+      </>:env&&problems.length===0?<div className="empty-state"><BookOpen size={28}/><h3>题库为空</h3><p>通过题库管理接口导入题目后刷新页面。</p></div>:<div className="loading"><LoaderCircle className="spin"/>正在加载题目…</div>}</div>
       <footer className="problem-footer"><span>{index+1} / {problems.length} 题</span><button disabled={index<=0} onClick={()=>setActive(problems[index-1].id)}>上一题</button><button disabled={index>=problems.length-1||index<0} onClick={()=>setActive(problems[index+1].id)}>下一题 <ChevronRight size={14}/></button></footer>
      </section>
      <section className="coding-panel">
@@ -77,6 +82,7 @@ function App(){
     </div>
    </main>
   </div>
+  {showManager&&<BankManager token={env?.token} onClose={()=>setShowManager(false)} onChanged={refreshBank}/>}
   {toast&&<div className="toast" role="status"><Check size={16}/>{toast}</div>}
   {showReset&&<div className="modal-backdrop" onClick={()=>setShowReset(false)}><div className="modal small" role="dialog" aria-modal="true" aria-label="重置代码" onClick={e=>e.stopPropagation()}><h2>重置当前代码？</h2><p>当前题目的草稿将恢复为初始模板，已提交的历史记录仍可恢复。</p><div className="modal-actions"><button autoFocus className="secondary" onClick={()=>setShowReset(false)}>取消</button><button className="primary" onClick={()=>{updateCode(problem.starter);setShowReset(false);notify('已恢复初始模板')}}>重置代码</button></div></div></div>}
   {showSolution&&<div className="modal-backdrop" onClick={()=>setShowSolution(false)}><div className="modal" role="dialog" aria-modal="true" aria-label="参考实现" onClick={e=>e.stopPropagation()}><div className="modal-head"><h2>参考实现</h2><button autoFocus className="icon" aria-label="关闭参考实现" onClick={()=>setShowSolution(false)}><X size={20}/></button></div><p>{problem.title} · 先理解每一步的张量形状，再独立复现。</p><pre>{solution}</pre><div className="modal-actions"><button className="secondary" onClick={async()=>{try{await navigator.clipboard.writeText(solution);notify('参考实现已复制')}catch{notify('复制失败，请手动选择代码')}}}><Copy size={15}/>复制代码</button><button className="primary" onClick={()=>setShowSolution(false)}>继续练习</button></div></div></div>}

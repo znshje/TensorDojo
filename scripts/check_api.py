@@ -13,7 +13,7 @@ def request(path,data=None,headers=None):
 
 if __name__=='__main__':
     status,health=request('/api/health'); assert status==200
-    status,problems=request('/api/problems'); assert status==200 and len(problems)==43
+    status,problems=request('/api/problems'); assert status==200 and len(problems)>0
     for p in problems:
         status,detail=request('/api/problems/'+p['id'])
         assert status==200 and '__main__' in detail['starter'] and detail['runner'] and all(e['output'] for e in detail['examples'])
@@ -28,4 +28,4 @@ if __name__=='__main__':
     assert status==200 and result['status']=='executed' and 'DEMO_OK' in result['stdout']
     assert request('/api/judge',{**payload,'mode':'invalid'},headers)[0]==400
     assert request('/api/health',headers={'Host':'untrusted.invalid'})[0]==403
-    print('PASS: 43 problem APIs, real Python run, token/origin/host checks, invalid request rejection.')
+    print(f'PASS: {len(problems)} problem APIs, real Python run, token/origin/host checks, invalid request rejection.')

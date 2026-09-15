@@ -115,3 +115,20 @@ python scripts/check_api.py
 - `frontend/src/style.css`：深色响应式工作台主题。
 
 增加题目时，需写清维度、数值稳定性、mask 与梯度约定，并加入至少一个能区分常见错误实现的边界场景。
+
+## 维护 / 导入 / 导出题库
+
+页面右上角点击 **题库管理**，即可新建、编辑、复制、删除与恢复题目，以及单题、勾选批量或全量导出。导入支持选择 JSON 文件或粘贴内容，先预检，再确认写入；同 ID 覆盖需要显式勾选。编辑器支持题目说明、参考实现、练习模板、测试数据与判题规则，保存前自动校验。
+
+详见 [题库管理接口文档](docs/question-bank.md)，完整示例在 [examples/question-bank.json](examples/question-bank.json)。
+
+```bash
+python scripts/bank_cli.py list
+python scripts/bank_cli.py export -o question-bank-backup.json
+python scripts/bank_cli.py validate examples/question-bank.json
+python scripts/bank_cli.py import examples/question-bank.json --dry-run
+# 确认预检结果后导入
+python scripts/bank_cli.py import examples/question-bank.json
+```
+
+支持 API / CLI 新增、完整更新、可恢复删除、恢复、批量校验、按题导出与全量导出。写入使用全局版本检查与原子持久化，服务无需重启，刷新页面即可看到新增题目。
