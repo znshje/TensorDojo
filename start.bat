@@ -38,6 +38,15 @@ exit /b %errorlevel%
 :python_ok
 echo [Tensor Dojo] 使用 Python：%PYTHON_BIN% %PYTHON_ARGS%
 
+"%PYTHON_BIN%" %PYTHON_ARGS% -c "import jedi" >nul 2>&1
+if errorlevel 1 (
+  echo [Tensor Dojo] 缺少代码补全依赖 jedi，正在安装…
+  "%PYTHON_BIN%" %PYTHON_ARGS% -m pip install "jedi>=0.19"
+  if errorlevel 1 (
+    echo [Tensor Dojo] jedi 安装失败，代码补全将使用内置提示。
+  )
+)
+
 where npm >nul 2>&1
 if errorlevel 1 (
   echo [Tensor Dojo] 未找到 npm，请安装 Node.js 20.19+ / 22.12+ 并加入 PATH。
