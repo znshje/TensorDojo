@@ -1,6 +1,5 @@
 """Run submitted reference code only in a bounded, disposable process."""
 import json
-import resource
 from pathlib import Path
 import sys
 import traceback
@@ -10,6 +9,11 @@ from bank import executable,decode
 from catalog import PROBLEMS,public_problem
 from templates import add_templates
 from worker import judge
+
+try:
+    import resource
+except ImportError:
+    resource = None
 
 
 def prepare(spec):
@@ -28,8 +32,9 @@ def prepare(spec):
     return {'spec':spec,'prepared':{k:p[k] for k in ('starter','runner','solution')}|{'public':public}}
 
 if __name__=='__main__':
-    resource.setrlimit(resource.RLIMIT_CPU,(25,26))
-    resource.setrlimit(resource.RLIMIT_FSIZE,(20*1024*1024,20*1024*1024))
+    if resource is not None:
+        resource.setrlimit(resource.RLIMIT_CPU,(25,26))
+        resource.setrlimit(resource.RLIMIT_FSIZE,(20*1024*1024,20*1024*1024))
     output=Path(sys.argv[2]);results=[]
     try:
         for spec in json.loads(Path(sys.argv[1]).read_text()):

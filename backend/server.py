@@ -25,6 +25,27 @@ SLOTS=threading.BoundedSemaphore(2)
 STORE=BankStore(BUILTIN_PROBLEMS)
 BANK_SLOTS=threading.BoundedSemaphore(1)
 
+def popen_options():
+    options={'stdout':subprocess.DEVNULL,'stderr':subprocess.DEVNULL}
+    if os.name=='posix':
+        options['start_new_session']=True
+    return options
+
+
+def kill_process(proc):
+    try:
+        if os.name=='posix':
+            os.killpg(proc.pid,signal.SIGKILL)
+        else:
+            proc.kill()
+    except (ProcessLookupError,OSError):
+        pass
+    try:
+        proc.wait(timeout=5)
+    except (subprocess.TimeoutExpired,OSError):
+        pass
+
+
 def database():
     DATA.mkdir(exist_ok=True)
     db=sqlite3.connect(DATA/'progress.sqlite3')
@@ -37,7 +58,7 @@ def run_submission(payload,timeout=18):
         request=Path(temp)/'request.json'; result=Path(temp)/'result.json'
         request.write_text(json.dumps(payload))
         env={**os.environ,'OMP_NUM_THREADS':'1','MKL_NUM_THREADS':'1','OPENBLAS_NUM_THREADS':'1','CUDA_VISIBLE_DEVICES':''}
-        proc=subprocess.Popen([sys.executable,str(ROOT/'backend/worker.py'),str(request),str(result)],cwd=temp,env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
+        proc=subprocess.Popen([sys.executable,str(ROOT/'backend/worker.py'),str(request),str(result)],cwd=temp,env=env,**popen_options())
         try:
             proc.wait(timeout=timeout)
             if proc.returncode!=0 or not result.exists():
@@ -47,9 +68,7 @@ def run_submission(payload,timeout=18):
         except subprocess.TimeoutExpired:
             return {'status':'timeout','error':f'超过 {timeout} 秒运行时限，请检查死循环或过大的张量。','cases':[]}
         finally:
-            try: os.killpg(proc.pid,signal.SIGKILL)
-            except ProcessLookupError: pass
-            proc.wait()
+            kill_process(proc)
 
 def prepare_import(specs):
     if not BANK_SLOTS.acquire(blocking=False):raise BankError('已有题库校验正在进行，请稍后重试',429)
@@ -58,7 +77,7 @@ def prepare_import(specs):
             source=Path(temp)/'request.json';result=Path(temp)/'result.json'
             source.write_text(json.dumps(specs,ensure_ascii=False))
             env={**os.environ,'CUDA_VISIBLE_DEVICES':'','OMP_NUM_THREADS':'1','MKL_NUM_THREADS':'1'}
-            proc=subprocess.Popen([sys.executable,str(ROOT/'backend/bank_validation.py'),str(source),str(result)],cwd=temp,env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
+            proc=subprocess.Popen([sys.executable,str(ROOT/'backend/bank_validation.py'),str(source),str(result)],cwd=temp,env=env,**popen_options())
             try:
                 proc.wait(timeout=40)
                 if proc.returncode!=0 or not result.exists():raise BankError('参考实现校验进程异常退出或超出资源限制',422)
@@ -67,9 +86,7 @@ def prepare_import(specs):
                 return response['rows']
             except subprocess.TimeoutExpired:raise BankError('参考实现校验超过 40 秒，请检查代码或缩小导入批次',422)
             finally:
-                try:os.killpg(proc.pid,signal.SIGKILL)
-                except ProcessLookupError:pass
-                proc.wait()
+                kill_process(proc)
     finally:BANK_SLOTS.release()
 
 

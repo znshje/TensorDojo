@@ -6,12 +6,16 @@ import json
 import math
 import os
 from pathlib import Path
-import resource
 import sys
 import time
 import traceback
 import torch
 from catalog import PROBLEMS
+
+try:
+    import resource
+except ImportError:
+    resource = None
 
 torch.set_num_threads(1)
 
@@ -105,8 +109,9 @@ def judge(problem_id,code,mode='submit'):
     return {'status':'accepted' if passed==len(results) and results else 'wrong_answer','passed':passed,'total':len(results),'cases':results,'stdout':log.getvalue(),'ms':round((time.perf_counter()-started)*1000,1)}
 
 if __name__=='__main__':
-    resource.setrlimit(resource.RLIMIT_CPU,(10,11))
-    resource.setrlimit(resource.RLIMIT_FSIZE,(2*1024*1024,2*1024*1024))
+    if resource is not None and os.name=='posix':
+        resource.setrlimit(resource.RLIMIT_CPU,(10,11))
+        resource.setrlimit(resource.RLIMIT_FSIZE,(2*1024*1024,2*1024*1024))
     request=json.loads(Path(sys.argv[1]).read_text())
     if '_bank_spec' in request:
         from bank import executable
