@@ -130,11 +130,14 @@ class Handler(SimpleHTTPRequestHandler):
         allowed={f'http://127.0.0.1:{self.server.server_port}',f'http://localhost:{self.server.server_port}','http://127.0.0.1:5173','http://localhost:5173'}
         if origin and origin not in allowed: return self.json(403,{'error':'拒绝跨站执行请求'})
         if self.headers.get('X-Dojo-Token')!=TOKEN: return self.json(403,{'error':'会话失效，请刷新页面'})
-        if urlparse(self.path).path.startswith('/api/bank'):
-            return self.bank_write(urlparse(self.path).path)
+        path=urlparse(self.path).path
+        if path.startswith('/api/bank'):
+            return self.bank_write(path)
+        if path=='/api/complete':
+            return self.complete()
         if self.command!='POST':return self.json(405,{'error':'判题只支持 POST'})
         PROBLEMS=STORE.snapshot()
-        if urlparse(self.path).path!='/api/judge': return self.json(404,{'error':'接口不存在'})
+        if path!='/api/judge': return self.json(404,{'error':'接口不存在'})
         try:
             n=int(self.headers.get('Content-Length','0'))
             if n<1 or n>100000: return self.json(413,{'error':'代码请求大小须在 1–100000 字节之间'})
@@ -156,6 +159,36 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_PUT(self):return self.do_POST()
     def do_DELETE(self):return self.do_POST()
+
+    def complete(self):
+        try:
+            n=int(self.headers.get('Content-Length','0'))
+            if not 1<=n<=200000:return self.json(413,{'error':'补全请求大小不合法'})
+            body=json.loads(self.rfile.read(n))
+        except (ValueError,UnicodeError,TypeError):return self.json(400,{'error':'请求必须为合法 JSON'})
+        if not isinstance(body,dict):return self.json(400,{'error':'请求体必须为对象'})
+        code=body.get('code');line=body.get('line');column=body.get('column')
+        if not isinstance(code,str) or not isinstance(line,int) or not isinstance(column,int) or not 1<=line<=100000 or not 1<=column<=100000:
+            return self.json(400,{'error':'code/line/column 参数不合法'})
+        try:
+            import jedi
+            cache=DATA/'jedi-cache';cache.mkdir(parents=True,exist_ok=True)
+            os.environ.setdefault('XDG_CACHE_HOME',str(cache))
+            script=jedi.Script(code=code,path='solution.py')
+            items=[]
+            for c in script.complete(line,column-1)[:60]:
+                try:doc=(c.docstring() or '')[:500]
+                except Exception:doc=''
+                items.append({
+                    'label':c.name,
+                    'type':c.type,
+                    'detail':c.type+((' · '+c.full_name) if getattr(c,'full_name',None) else ''),
+                    'insertText':c.name,
+                    'documentation':doc
+                })
+            return self.json(200,{'available':True,'items':items})
+        except Exception as exc:
+            return self.json(200,{'available':False,'items':[],'error':str(exc)[:200]})
 
     def bank_get(self,path):
         if self.headers.get('X-Dojo-Token')!=TOKEN:return self.json(403,{'error':'需要 X-Dojo-Token'})
